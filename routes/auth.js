@@ -14,7 +14,7 @@ router.post('/login', async (req, res) => {
     try {
         const query = `
             SELECT u.*, DATE_FORMAT(u.subscriptionExpiryDate, '%Y-%m-%d') as subscriptionExpiryDate 
-            FROM users u WHERE u.email = ? AND u.role = ?
+            FROM users u WHERE u.email = ? AND u.role = ? AND u.status = 'Active'
         `;
         const [rows] = await db.query(query, [email.trim(), role]);
         
@@ -74,11 +74,11 @@ router.get('/drivers', async (req, res) => {
     const offset = (page - 1) * limit;
 
     try {
-        const [[{ totalItems }]] = await db.query("SELECT COUNT(*) as totalItems FROM users WHERE role = 'Driver'");
+        const [[{ totalItems }]] = await db.query("SELECT COUNT(*) as totalItems FROM users WHERE role = 'Driver' AND status = 'Active'");
         const totalPages = Math.ceil(totalItems / limit);
 
         const query = `
-            SELECT id, name, email, phone, role FROM users WHERE role = 'Driver'
+            SELECT id, name, email, phone, role FROM users WHERE role = 'Driver' AND status = 'Active'
             ORDER BY name ASC
             LIMIT ? OFFSET ?
         `;
@@ -92,7 +92,7 @@ router.get('/drivers', async (req, res) => {
 // GET /api/auth/drivers/all (for dropdowns)
 router.get('/drivers/all', async (req, res) => {
     try {
-        const query = `SELECT id, name FROM users WHERE role = 'Driver' ORDER BY name ASC`;
+        const query = `SELECT id, name FROM users WHERE role = 'Driver' AND status = 'Active' ORDER BY name ASC`;
         const [drivers] = await db.query(query);
         res.json(drivers);
     } catch (error) {
@@ -109,7 +109,7 @@ router.get('/customers', async (req, res) => {
     const searchTerm = req.query.term || '';
     const subscriptionFilter = req.query.subscription || 'all';
 
-    let whereClauses = ["u.role = 'Customer'"];
+    let whereClauses = ["u.role = 'Customer'", "u.status = 'Active'"];
     let queryParams = [];
 
     if (searchTerm) {
@@ -176,6 +176,21 @@ router.put('/users/:id', async (req, res) => {
         delete updatedUser.password;
         res.json(updatedUser);
 
+    } catch (error) {
+        res.status(500).json({ message: 'Database error', error });
+    }
+});
+
+// DELETE /api/auth/users/:id
+router.delete('/users/:id', async (req, res) => {
+    const { id } = req.params;
+    try {
+        const [result] = await db.query("UPDATE users SET status = 'Deleted' WHERE id = ?", [id]);
+        if (result.affectedRows > 0) {
+            res.json({ message: 'User deleted successfully' });
+        } else {
+            res.status(404).json({ message: 'User not found' });
+        }
     } catch (error) {
         res.status(500).json({ message: 'Database error', error });
     }

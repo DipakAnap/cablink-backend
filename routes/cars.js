@@ -1,4 +1,3 @@
-
 const express = require('express');
 const router = express.Router();
 const db = require('../db');
@@ -10,13 +9,14 @@ router.get('/', async (req, res) => {
     const offset = (page - 1) * limit;
 
     try {
-        const [[{ totalItems }]] = await db.query('SELECT COUNT(*) as totalItems FROM cars');
+        const [[{ totalItems }]] = await db.query("SELECT COUNT(*) as totalItems FROM cars WHERE status != 'Deleted'");
         const totalPages = Math.ceil(totalItems / limit);
 
         const query = `
             SELECT c.*, u.name as driverName, u.phone as driverPhone 
             FROM cars c
             JOIN users u ON c.driverId = u.id
+            WHERE c.status != 'Deleted'
             ORDER BY c.id DESC
             LIMIT ?
             OFFSET ?
@@ -76,8 +76,7 @@ router.put('/:id', async (req, res) => {
 router.delete('/:id', async (req, res) => {
     const { id } = req.params;
     try {
-        // The database schema is set to ON DELETE CASCADE for related tables
-        await db.query('DELETE FROM cars WHERE id = ?', [id]);
+        await db.query("UPDATE cars SET status = 'Deleted' WHERE id = ?", [id]);
         res.json({ message: 'Car deleted successfully' });
     } catch (err) {
         res.status(500).json({ message: err.message });

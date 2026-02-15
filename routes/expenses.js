@@ -1,4 +1,3 @@
-
 const express = require('express');
 const router = express.Router();
 const db = require('../db');
@@ -10,7 +9,7 @@ router.get('/', async (req, res) => {
     const offset = (page - 1) * limit;
 
     try {
-        const [[{ totalItems }]] = await db.query('SELECT COUNT(*) as totalItems FROM expenses');
+        const [[{ totalItems }]] = await db.query("SELECT COUNT(*) as totalItems FROM expenses WHERE status = 'Active'");
         const totalPages = Math.ceil(totalItems / limit);
 
         const query = `
@@ -21,6 +20,7 @@ router.get('/', async (req, res) => {
                 c.model as carModel, c.carNumber
             FROM expenses e
             JOIN cars c ON e.carId = c.id
+            WHERE e.status = 'Active'
             ORDER BY e.date DESC
             LIMIT ?
             OFFSET ?
@@ -40,6 +40,35 @@ router.get('/', async (req, res) => {
             totalPages,
             currentPage: page
         });
+    } catch (err) {
+        res.status(500).json({ message: err.message });
+    }
+});
+
+// GET all expenses (not paginated) for data service
+router.get('/all', async (req, res) => {
+    try {
+        const query = `
+            SELECT 
+                e.id, e.carId, e.expenseType, e.amount, 
+                DATE_FORMAT(e.date, '%Y-%m-%d') as date,
+                e.description,
+                c.model as carModel, c.carNumber
+            FROM expenses e
+            JOIN cars c ON e.carId = c.id
+            WHERE e.status = 'Active'
+            ORDER BY e.date DESC
+        `;
+        const [expenses] = await db.query(query);
+        const result = expenses.map(e => ({
+            ...e,
+            car: {
+                id: e.carId,
+                model: e.carModel,
+                carNumber: e.carNumber
+            }
+        }));
+        res.json(result);
     } catch (err) {
         res.status(500).json({ message: err.message });
     }
@@ -78,7 +107,7 @@ router.put('/:id', async (req, res) => {
 router.delete('/:id', async (req, res) => {
     const { id } = req.params;
     try {
-        await db.query('DELETE FROM expenses WHERE id = ?', [id]);
+        await db.query("UPDATE expenses SET status = 'Deleted' WHERE id = ?", [id]);
         res.json({ message: 'Expense deleted successfully' });
     } catch (err) {
         res.status(500).json({ message: err.message });

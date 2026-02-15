@@ -1,4 +1,3 @@
-
 const express = require('express');
 const router = express.Router();
 const db = require('../db');
@@ -10,13 +9,14 @@ router.get('/plans', async (req, res) => {
     const offset = (page - 1) * limit;
 
     try {
-        const [[{ totalItems }]] = await db.query('SELECT COUNT(*) as totalItems FROM subscription_plans');
+        const [[{ totalItems }]] = await db.query("SELECT COUNT(*) as totalItems FROM subscription_plans WHERE status = 'Active'");
         const totalPages = Math.ceil(totalItems / limit);
 
         const query = `
             SELECT sp.*, u.name as providerName 
             FROM subscription_plans sp
             JOIN users u ON sp.providerId = u.id
+            WHERE sp.status = 'Active'
             ORDER BY sp.providerRole, sp.durationMonths ASC
             LIMIT ?
             OFFSET ?
@@ -28,6 +28,23 @@ router.get('/plans', async (req, res) => {
             totalPages,
             currentPage: page
         });
+    } catch (err) {
+        res.status(500).json({ message: err.message });
+    }
+});
+
+// GET all subscription plans (not paginated) for data service
+router.get('/plans/all', async (req, res) => {
+    try {
+        const query = `
+            SELECT sp.*, u.name as providerName 
+            FROM subscription_plans sp
+            JOIN users u ON sp.providerId = u.id
+            WHERE sp.status = 'Active'
+            ORDER BY sp.providerRole, sp.durationMonths ASC
+        `;
+        const [plans] = await db.query(query);
+        res.json(plans);
     } catch (err) {
         res.status(500).json({ message: err.message });
     }
@@ -75,8 +92,7 @@ router.put('/plans/:id', async (req, res) => {
 router.delete('/plans/:id', async (req, res) => {
     const { id } = req.params;
     try {
-        // ON DELETE CASCADE will handle users subscribed to this plan
-        await db.query('DELETE FROM subscription_plans WHERE id = ?', [id]);
+        await db.query("UPDATE subscription_plans SET status = 'Deleted' WHERE id = ?", [id]);
         res.json({ message: 'Plan deleted successfully' });
     } catch (err) {
         res.status(500).json({ message: err.message });
@@ -88,9 +104,9 @@ router.delete('/plans/:id', async (req, res) => {
 router.post('/assign', async (req, res) => {
     const { userId, planId } = req.body;
     try {
-        const [planRows] = await db.query('SELECT durationMonths FROM subscription_plans WHERE id = ?', [planId]);
+        const [planRows] = await db.query("SELECT durationMonths FROM subscription_plans WHERE id = ? AND status = 'Active'", [planId]);
         if (planRows.length === 0) {
-            return res.status(404).json({ message: 'Subscription plan not found.' });
+            return res.status(404).json({ message: 'Subscription plan not found or is inactive.' });
         }
 
         const durationMonths = planRows[0].durationMonths;

@@ -1,4 +1,3 @@
-
 const express = require('express');
 const router = express.Router();
 const db = require('../db');
@@ -10,7 +9,7 @@ router.get('/', async (req, res) => {
     const offset = (page - 1) * limit;
 
     try {
-        const [[{ totalItems }]] = await db.query('SELECT COUNT(*) as totalItems FROM routes');
+        const [[{ totalItems }]] = await db.query("SELECT COUNT(*) as totalItems FROM routes WHERE status = 'Active'");
         const totalPages = Math.ceil(totalItems / limit);
 
         const routeQuery = `
@@ -23,6 +22,7 @@ router.get('/', async (req, res) => {
             FROM routes r
             JOIN cars c ON r.carId = c.id
             JOIN users u ON c.driverId = u.id
+            WHERE r.status = 'Active'
             ORDER BY r.date DESC, r.time DESC
             LIMIT ?
             OFFSET ?
@@ -106,9 +106,7 @@ router.put('/:id', async (req, res) => {
 router.delete('/:id', async (req, res) => {
     const { id } = req.params;
     try {
-        // Delete related bookings first to avoid foreign key issues if not cascading
-        await db.query('DELETE FROM bookings WHERE routeId = ?', [id]);
-        await db.query('DELETE FROM routes WHERE id = ?', [id]);
+        await db.query("UPDATE routes SET status = 'Deleted' WHERE id = ?", [id]);
         res.json({ message: 'Route deleted successfully' });
     } catch (err) {
         res.status(500).json({ message: err.message });
