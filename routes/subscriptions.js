@@ -58,7 +58,8 @@ router.post('/plans', async (req, res) => {
             'INSERT INTO subscription_plans (name, durationMonths, price, customerDiscountPercent, providerId, providerRole) VALUES (?, ?, ?, ?, ?, ?)',
             [name, durationMonths, price, customerDiscountPercent, providerId, providerRole]
         );
-        res.status(201).json({ id: result.insertId, ...req.body });
+        const [[newPlan]] = await db.query('SELECT * FROM subscription_plans WHERE id = ?', [result.insertId]);
+        res.status(201).json(newPlan);
     } catch (err) {
         res.status(500).json({ message: err.message });
     }
@@ -82,7 +83,8 @@ router.put('/plans/:id', async (req, res) => {
             'UPDATE subscription_plans SET name = ?, price = ?, customerDiscountPercent = ? WHERE id = ?',
             [name, price, customerDiscountPercent, id]
         );
-        res.json({ message: 'Plan updated successfully' });
+        const [[updatedPlan]] = await db.query('SELECT * FROM subscription_plans WHERE id = ?', [id]);
+        res.json(updatedPlan);
     } catch (err) {
         res.status(500).json({ message: err.message });
     }
@@ -102,14 +104,23 @@ router.delete('/plans/:id', async (req, res) => {
 
 // POST assign a subscription to a user (customer)
 router.post('/assign', async (req, res) => {
-    const { userId, planId } = req.body;
+    const { userId, planId, paymentDetails } = req.body;
     try {
-        const [planRows] = await db.query("SELECT durationMonths FROM subscription_plans WHERE id = ? AND status = 'Active'", [planId]);
+        const [planRows] = await db.query("SELECT durationMonths, price FROM subscription_plans WHERE id = ? AND status = 'Active'", [planId]);
         if (planRows.length === 0) {
             return res.status(404).json({ message: 'Subscription plan not found or is inactive.' });
         }
 
-        const durationMonths = planRows[0].durationMonths;
+        const { durationMonths, price } = planRows[0];
+
+        // If paymentDetails are provided, log the transaction
+        if (paymentDetails) {
+            await db.query(
+                'INSERT INTO payment_transactions (user_id, transaction_type, amount, gateway_transaction_id) VALUES (?, ?, ?, ?)',
+                [userId, 'Membership', price, paymentDetails.transactionId]
+            );
+        }
+
         const [result] = await db.query(
             'UPDATE users SET subscriptionPlanId = ?, subscriptionExpiryDate = DATE_ADD(CURDATE(), INTERVAL ? MONTH) WHERE id = ?',
             [planId, durationMonths, userId]

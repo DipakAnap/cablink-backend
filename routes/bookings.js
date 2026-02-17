@@ -3,6 +3,73 @@ const express = require('express');
 const router = express.Router();
 const db = require('../db');
 
+// Helper function to create notifications
+const createNotifications = async (bookingId, userId, type) => {
+    try {
+        const [[bookingData]] = await db.query('SELECT * FROM bookings WHERE id = ?', [bookingId]);
+        if (!bookingData) return;
+
+        let message = '';
+        if (type === 'BookingConfirmation') {
+            message = `Your booking #${bookingId} is confirmed. Total: INR ${bookingData.totalPrice}.`;
+        } else if (type === 'BookingCancellation') {
+            message = `Your booking #${bookingId} has been cancelled.`;
+        }
+        
+        const channels = ['Email', 'SMS', 'WhatsApp'];
+        const notifications = channels.map(channel => 
+            [bookingId, userId, type, channel, message]
+        );
+
+        if (notifications.length > 0) {
+            await db.query(
+                'INSERT INTO notifications (booking_id, user_id, type, channel, message) VALUES ?',
+                [notifications]
+            );
+        }
+    } catch (error) {
+        console.error('Failed to create notifications:', error);
+    }
+};
+
+
+const formatBooking = (b) => {
+    return {
+        id: b.id,
+        userId: b.userId,
+        bookingDate: b.bookingDate,
+        bookingType: b.bookingType,
+        status: b.status,
+        paymentStatus: b.paymentStatus,
+        totalPrice: b.totalPrice,
+        routeId: b.routeId,
+        seatsBooked: b.seatsBooked,
+        carId: b.carId,
+        pickupLocation: b.pickupLocation,
+        dropoffLocation: b.dropoffLocation,
+        startDate: b.startDate,
+        endDate: b.endDate,
+        actualDistanceKm: b.actualDistanceKm,
+        user: { id: b.userId, name: b.userName, phone: b.userPhone },
+        car: b.carIdResolved ? { 
+            id: b.carIdResolved, 
+            model: b.carModel, 
+            carNumber: b.carNumber,
+            pricePerKm: b.carPricePerKm,
+            minKmPerDay: b.carMinKmPerDay,
+            driver: { id: b.driverId, name: b.driverName, phone: b.driverPhone, qrCodeUrl: b.driverQrCode } 
+        } : null,
+        route: b.routeIdResolved ? { 
+            id: b.routeIdResolved, 
+            from: b.routeFrom, 
+            to: b.routeTo, 
+            date: b.routeDate,
+            time: b.routeTime,
+            price: b.routePrice
+        } : null
+    };
+};
+
 // GET all bookings with details
 router.get('/', async (req, res) => {
     const page = parseInt(req.query.page) || 1;
@@ -51,7 +118,7 @@ router.get('/', async (req, res) => {
                 DATE_FORMAT(b.startDate, '%Y-%m-%dT%H:%i:%s.000Z') as startDate,
                 DATE_FORMAT(b.endDate, '%Y-%m-%dT%H:%i:%s.000Z') as endDate,
                 u.name as userName, u.phone as userPhone,
-                c.id as carIdResolved, c.model as carModel, c.carNumber as carNumber,
+                c.id as carIdResolved, c.model as carModel, c.carNumber as carNumber, c.pricePerKm as carPricePerKm, c.minKmPerDay as carMinKmPerDay,
                 ud.id as driverId, ud.name as driverName, ud.phone as driverPhone, ud.qrCodeUrl as driverQrCode,
                 r.id as routeIdResolved, r.from as routeFrom, r.to as routeTo, 
                 DATE_FORMAT(r.date, '%Y-%m-%d') as routeDate, r.time as routeTime,
@@ -68,37 +135,7 @@ router.get('/', async (req, res) => {
         `;
         const [bookings] = await db.query(query, [...queryParams, limit, offset]);
 
-        const result = bookings.map(b => ({
-            id: b.id,
-            userId: b.userId,
-            bookingDate: b.bookingDate,
-            bookingType: b.bookingType,
-            status: b.status,
-            paymentStatus: b.paymentStatus,
-            totalPrice: b.totalPrice,
-            routeId: b.routeId,
-            seatsBooked: b.seatsBooked,
-            carId: b.carId,
-            pickupLocation: b.pickupLocation,
-            dropoffLocation: b.dropoffLocation,
-            startDate: b.startDate,
-            endDate: b.endDate,
-            user: { id: b.userId, name: b.userName, phone: b.userPhone },
-            car: b.carIdResolved ? { 
-                id: b.carIdResolved, 
-                model: b.carModel, 
-                carNumber: b.carNumber, 
-                driver: { id: b.driverId, name: b.driverName, phone: b.driverPhone, qrCodeUrl: b.driverQrCode } 
-            } : null,
-            route: b.routeIdResolved ? { 
-                id: b.routeIdResolved, 
-                from: b.routeFrom, 
-                to: b.routeTo, 
-                date: b.routeDate,
-                time: b.routeTime,
-                price: b.routePrice
-            } : null
-        }));
+        const result = bookings.map(formatBooking);
 
         res.json({
             items: result,
@@ -114,7 +151,7 @@ router.get('/', async (req, res) => {
 
 // POST a new route booking
 router.post('/route', async (req, res) => {
-    const { routeId, userId, seatsToBook } = req.body;
+    const { routeId, userId, seatsToBook, paymentStatus, paymentDetails } = req.body;
     try {
         const [routeRows] = await db.query('SELECT price, carId FROM routes WHERE id = ?', [routeId]);
         if (routeRows.length === 0) return res.status(404).json({ message: 'Route not found' });
@@ -134,9 +171,20 @@ router.post('/route', async (req, res) => {
 
         const bookingDate = new Date().toISOString().split('T')[0];
         const [result] = await db.query(
-            'INSERT INTO bookings (userId, bookingDate, bookingType, status, totalPrice, routeId, seatsBooked) VALUES (?, ?, ?, ?, ?, ?, ?)',
-            [userId, bookingDate, 'Route', 'Confirmed', finalPrice, routeId, seatsToBook]
+            'INSERT INTO bookings (userId, bookingDate, bookingType, status, paymentStatus, totalPrice, routeId, seatsBooked) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+            [userId, bookingDate, 'Route', 'Confirmed', paymentStatus || 'Pending', finalPrice, routeId, seatsToBook]
         );
+        
+        if (paymentDetails) {
+            await db.query(
+                'INSERT INTO payment_transactions (booking_id, transaction_type, amount, gateway_transaction_id) VALUES (?, ?, ?, ?)',
+                [result.insertId, 'Booking', finalPrice, paymentDetails.transactionId]
+            );
+        }
+
+        // Create notifications
+        await createNotifications(result.insertId, userId, 'BookingConfirmation');
+
         res.status(201).json({ id: result.insertId, ...req.body, totalPrice: finalPrice, bookingDate, status: 'Confirmed', bookingType: 'Route' });
     } catch (err) {
         res.status(500).json({ message: err.message });
@@ -145,35 +193,25 @@ router.post('/route', async (req, res) => {
 
 // POST a new private hire booking
 router.post('/private', async (req, res) => {
-    const { userId, carId, pickupLocation, dropoffLocation, startDate, endDate } = req.body;
+    const { userId, carId, pickupLocation, dropoffLocation, startDate, endDate, seatsBooked, paymentStatus, totalPrice, estimatedDistanceKm, paymentDetails } = req.body;
     try {
-        const [carRows] = await db.query('SELECT pricePerKm, driverId FROM cars WHERE id = ?', [carId]);
-        if (carRows.length === 0) return res.status(404).json({ message: 'Car not found' });
-        
-        const [driverRows] = await db.query(`
-            SELECT u.subscriptionPlanId, u.subscriptionExpiryDate, sp.customerDiscountPercent
-            FROM users u LEFT JOIN subscription_plans sp ON u.subscriptionPlanId = sp.id
-            WHERE u.id = ?
-        `, [carRows[0].driverId]);
-
-        const start = new Date(startDate);
-        const end = new Date(endDate);
-        const durationHours = (end.getTime() - start.getTime()) / (1000 * 60 * 60);
-        const durationDays = Math.max(1, Math.ceil(durationHours / 24));
-        let estimatedPrice = carRows[0].pricePerKm * 150 * durationDays;
-
-        const driver = driverRows[0];
-        if (driver && driver.subscriptionPlanId && new Date(driver.subscriptionExpiryDate) > new Date()) {
-            estimatedPrice *= (1 - (driver.customerDiscountPercent / 100));
-        }
-
         const bookingDate = new Date().toISOString().split('T')[0];
         const [result] = await db.query(
-            'INSERT INTO bookings (userId, bookingDate, bookingType, status, totalPrice, carId, pickupLocation, dropoffLocation, startDate, endDate) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-            [userId, bookingDate, 'Private', 'Confirmed', estimatedPrice, carId, pickupLocation, dropoffLocation, startDate, endDate]
+            'INSERT INTO bookings (userId, bookingDate, bookingType, status, paymentStatus, totalPrice, carId, pickupLocation, dropoffLocation, startDate, endDate, seatsBooked, actualDistanceKm) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            [userId, bookingDate, 'Private', 'Confirmed', paymentStatus || 'Pending', totalPrice, carId, pickupLocation, dropoffLocation, startDate, endDate, seatsBooked, estimatedDistanceKm]
         );
 
-        res.status(201).json({ id: result.insertId, ...req.body, totalPrice: estimatedPrice, bookingDate, status: 'Confirmed', bookingType: 'Private' });
+        if (paymentDetails) {
+            await db.query(
+                'INSERT INTO payment_transactions (booking_id, transaction_type, amount, gateway_transaction_id) VALUES (?, ?, ?, ?)',
+                [result.insertId, 'Booking', totalPrice, paymentDetails.transactionId]
+            );
+        }
+
+        // Create notifications
+        await createNotifications(result.insertId, userId, 'BookingConfirmation');
+
+        res.status(201).json({ id: result.insertId, ...req.body, bookingDate, status: 'Confirmed', bookingType: 'Private' });
     } catch (err) {
         res.status(500).json({ message: err.message });
     }
@@ -215,8 +253,14 @@ router.put('/:id/seats', async (req, res) => {
 router.put('/:id/cancel', async (req, res) => {
     const { id } = req.params;
     try {
-        await db.query('UPDATE bookings SET status = ? WHERE id = ?', ['Cancelled', id]);
-        res.json({ message: 'Booking cancelled' });
+        const [[booking]] = await db.query('SELECT userId FROM bookings WHERE id = ?', [id]);
+        if (booking) {
+            await db.query('UPDATE bookings SET status = ? WHERE id = ?', ['Cancelled', id]);
+            await createNotifications(id, booking.userId, 'BookingCancellation');
+            res.json({ message: 'Booking cancelled' });
+        } else {
+            res.status(404).json({ message: 'Booking not found' });
+        }
     } catch (err) {
         res.status(500).json({ message: err.message });
     }
@@ -235,6 +279,68 @@ router.put('/:id/payment', async (req, res) => {
         await db.query('UPDATE bookings SET paymentStatus = ? WHERE id = ?', [status, id]);
         res.json({ message: 'Payment status updated' });
     } catch (err) {
+        res.status(500).json({ message: err.message });
+    }
+});
+
+// PUT to finalize a private hire booking
+router.put('/:id/finalize', async (req, res) => {
+    const { id } = req.params;
+    const { actualDistanceKm, finalPrice } = req.body;
+
+    try {
+        const [[booking]] = await db.query('SELECT * FROM bookings WHERE id = ?', [id]);
+        if (!booking || booking.bookingType !== 'Private') {
+            return res.status(404).json({ message: 'Private booking not found' });
+        }
+
+        const [[car]] = await db.query('SELECT * FROM cars WHERE id = ?', [booking.carId]);
+        if (!car) {
+            return res.status(404).json({ message: 'Associated car not found' });
+        }
+
+        let newTotalPrice;
+        if (finalPrice !== undefined && finalPrice !== null) {
+            newTotalPrice = parseFloat(finalPrice);
+        } else if (actualDistanceKm !== undefined && actualDistanceKm !== null) {
+            const distance = parseFloat(actualDistanceKm);
+            const pricePerKm = car.pricePerKm;
+            
+            const start = new Date(booking.startDate);
+            const end = new Date(booking.endDate);
+            const durationMs = Math.max(0, end.getTime() - start.getTime());
+            const durationDays = Math.ceil(durationMs / (1000 * 60 * 60 * 24));
+            const minDistance = (car.minKmPerDay || 0) * durationDays;
+
+            const billableDistance = Math.max(distance, minDistance);
+            newTotalPrice = billableDistance * pricePerKm;
+        } else {
+            return res.status(400).json({ message: 'actualDistanceKm or finalPrice is required.' });
+        }
+
+        await db.query(
+            'UPDATE bookings SET status = ?, totalPrice = ?, actualDistanceKm = ? WHERE id = ?',
+            ['Completed', newTotalPrice.toFixed(2), actualDistanceKm, id]
+        );
+        
+        const refetchQuery = `
+            SELECT 
+                b.*, DATE_FORMAT(b.bookingDate, '%Y-%m-%d') as bookingDate, DATE_FORMAT(b.startDate, '%Y-%m-%dT%H:%i:%s.000Z') as startDate, DATE_FORMAT(b.endDate, '%Y-%m-%dT%H:%i:%s.000Z') as endDate,
+                u.name as userName, u.phone as userPhone,
+                c.id as carIdResolved, c.model as carModel, c.carNumber as carNumber, c.pricePerKm as carPricePerKm, c.minKmPerDay as carMinKmPerDay,
+                ud.id as driverId, ud.name as driverName, ud.phone as driverPhone, ud.qrCodeUrl as driverQrCode
+            FROM bookings b
+            JOIN users u ON b.userId = u.id
+            LEFT JOIN cars c ON b.carId = c.id
+            LEFT JOIN users ud ON c.driverId = ud.id
+            WHERE b.id = ?
+        `;
+        const [[updatedBookingData]] = await db.query(refetchQuery, [id]);
+        
+        res.json(formatBooking(updatedBookingData));
+
+    } catch (err) {
+        console.error(err);
         res.status(500).json({ message: err.message });
     }
 });

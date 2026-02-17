@@ -7,6 +7,23 @@ router.get('/', async (req, res) => {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 6;
     const offset = (page - 1) * limit;
+    const { lat, lng } = req.query;
+
+    let distanceSelection = '';
+    let distanceParams = [];
+    let orderBy = 'r.date DESC, r.time DESC';
+
+    if (lat && lng) {
+        distanceSelection = `, (
+            6371 * acos(
+                cos(radians(?)) * cos(radians(r.from_lat)) * cos(radians(r.from_lng) - radians(?)) +
+                sin(radians(?)) * sin(radians(r.from_lat))
+            )
+        ) AS distance`;
+        distanceParams = [parseFloat(lat), parseFloat(lng), parseFloat(lat)];
+        orderBy = 'distance ASC';
+    }
+
 
     try {
         const [[{ totalItems }]] = await db.query("SELECT COUNT(*) as totalItems FROM routes WHERE status = 'Active'");
@@ -17,17 +34,19 @@ router.get('/', async (req, res) => {
                 r.id, r.from, r.to, 
                 DATE_FORMAT(r.date, '%Y-%m-%d') as date, 
                 r.time, r.price, r.carId,
+                r.from_lat, r.from_lng, r.to_lat, r.to_lng,
                 c.model as carModel, c.capacity as carCapacity, c.imageUrl as carImageUrl,
                 u.name as driverName, u.phone as driverPhone
+                ${distanceSelection}
             FROM routes r
             JOIN cars c ON r.carId = c.id
             JOIN users u ON c.driverId = u.id
             WHERE r.status = 'Active'
-            ORDER BY r.date DESC, r.time DESC
+            ORDER BY ${orderBy}
             LIMIT ?
             OFFSET ?
         `;
-        const [routes] = await db.query(routeQuery, [limit, offset]);
+        const [routes] = await db.query(routeQuery, [...distanceParams, limit, offset]);
 
         if (routes.length === 0) {
             return res.json({ items: [], totalItems, totalPages, currentPage: page });
@@ -75,13 +94,14 @@ router.get('/', async (req, res) => {
 
 // POST a new route
 router.post('/', async (req, res) => {
-    const { from, to, date, time, price, carId } = req.body;
+    const { from, to, date, time, price, carId, from_lat, from_lng, to_lat, to_lng } = req.body;
     try {
         const [result] = await db.query(
-            'INSERT INTO routes (`from`, `to`, `date`, `time`, `price`, `carId`) VALUES (?, ?, ?, ?, ?, ?)',
-            [from, to, date, time, price, carId]
+            'INSERT INTO routes (`from`, `to`, `date`, `time`, `price`, `carId`, `from_lat`, `from_lng`, `to_lat`, `to_lng`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            [from, to, date, time, price, carId, from_lat, from_lng, to_lat, to_lng]
         );
-        res.status(201).json({ id: result.insertId, ...req.body });
+        const [[newRoute]] = await db.query('SELECT * FROM routes WHERE id = ?', [result.insertId]);
+        res.status(201).json(newRoute);
     } catch (err) {
         res.status(500).json({ message: err.message });
     }
@@ -90,13 +110,14 @@ router.post('/', async (req, res) => {
 // PUT to update a route
 router.put('/:id', async (req, res) => {
     const { id } = req.params;
-    const { from, to, date, time, price, carId } = req.body;
+    const { from, to, date, time, price, carId, from_lat, from_lng, to_lat, to_lng } = req.body;
     try {
         await db.query(
-            'UPDATE routes SET `from` = ?, `to` = ?, `date` = ?, `time` = ?, `price` = ?, `carId` = ? WHERE id = ?',
-            [from, to, date, time, price, carId, id]
+            'UPDATE routes SET `from` = ?, `to` = ?, `date` = ?, `time` = ?, `price` = ?, `carId` = ?, `from_lat` = ?, `from_lng` = ?, `to_lat` = ?, `to_lng` = ? WHERE id = ?',
+            [from, to, date, time, price, carId, from_lat, from_lng, to_lat, to_lng, id]
         );
-        res.json({ message: 'Route updated successfully' });
+        const [[updatedRoute]] = await db.query('SELECT * FROM routes WHERE id = ?', [id]);
+        res.json(updatedRoute);
     } catch (err) {
         res.status(500).json({ message: err.message });
     }

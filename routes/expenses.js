@@ -82,7 +82,8 @@ router.post('/', async (req, res) => {
             'INSERT INTO expenses (carId, expenseType, amount, date, description) VALUES (?, ?, ?, ?, ?)',
             [carId, expenseType, amount, date, description]
         );
-        res.status(201).json({ id: result.insertId, ...req.body });
+        const [[newExpense]] = await db.query('SELECT * FROM expenses WHERE id = ?', [result.insertId]);
+        res.status(201).json(newExpense);
     } catch (err) {
         res.status(500).json({ message: err.message });
     }
@@ -97,7 +98,8 @@ router.put('/:id', async (req, res) => {
             'UPDATE expenses SET carId = ?, expenseType = ?, amount = ?, date = ?, description = ? WHERE id = ?',
             [carId, expenseType, amount, date, description, id]
         );
-        res.json({ message: 'Expense updated successfully' });
+        const [[updatedExpense]] = await db.query('SELECT * FROM expenses WHERE id = ?', [id]);
+        res.json(updatedExpense);
     } catch (err) {
         res.status(500).json({ message: err.message });
     }
