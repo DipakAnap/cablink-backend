@@ -21,6 +21,7 @@ app.use('/api/expenses', require('./routes/expenses'));
 app.use('/api/subscriptions', require('./routes/subscriptions'));
 app.use('/api/chat', require('./routes/chat'));
 app.use('/api/notifications', require('./routes/notifications'));
+app.use('/api/settings', require('./routes/settings'));
 
 app.get('/', (req, res) => {
   res.send('CabLink Backend is running!');

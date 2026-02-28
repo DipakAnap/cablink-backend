@@ -2,14 +2,38 @@ const express = require('express');
 const router = express.Router();
 const db = require('../db');
 
-// GET all expenses with car details
+// GET all expenses with car details and filters
 router.get('/', async (req, res) => {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 9;
     const offset = (page - 1) * limit;
+    const { carId, type, startDate, endDate } = req.query;
+
+    let whereClauses = ["e.status = 'Active'"];
+    let queryParams = [];
+
+    if (carId && carId !== 'All') {
+        whereClauses.push("e.carId = ?");
+        queryParams.push(carId);
+    }
+    if (type && type !== 'All') {
+        whereClauses.push("e.expenseType = ?");
+        queryParams.push(type);
+    }
+    if (startDate) {
+        whereClauses.push("e.date >= ?");
+        queryParams.push(startDate);
+    }
+    if (endDate) {
+        whereClauses.push("e.date <= ?");
+        queryParams.push(endDate);
+    }
+
+    const whereSql = whereClauses.join(' AND ');
 
     try {
-        const [[{ totalItems }]] = await db.query("SELECT COUNT(*) as totalItems FROM expenses WHERE status = 'Active'");
+        const countQuery = `SELECT COUNT(*) as totalItems FROM expenses e WHERE ${whereSql}`;
+        const [[{ totalItems }]] = await db.query(countQuery, queryParams);
         const totalPages = Math.ceil(totalItems / limit);
 
         const query = `
@@ -20,12 +44,12 @@ router.get('/', async (req, res) => {
                 c.model as carModel, c.carNumber
             FROM expenses e
             JOIN cars c ON e.carId = c.id
-            WHERE e.status = 'Active'
+            WHERE ${whereSql}
             ORDER BY e.date DESC
             LIMIT ?
             OFFSET ?
         `;
-        const [expenses] = await db.query(query, [limit, offset]);
+        const [expenses] = await db.query(query, [...queryParams, limit, offset]);
         const result = expenses.map(e => ({
             ...e,
             car: {

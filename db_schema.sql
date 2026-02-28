@@ -1,9 +1,24 @@
+
 -- Create the database if it doesn't exist
+drop database if exists cablink_db;
 CREATE DATABASE IF NOT EXISTS cablink_db;
 USE cablink_db;
 
 -- Drop tables in reverse order of dependency to avoid foreign key errors
-DROP TABLE IF EXISTS `notifications`, `payment_transactions`, `chat_messages`, `expenses`, `bookings`, `routes`, `cars`, `users`, `subscription_plans`;
+DROP TABLE IF EXISTS `notifications`, `payment_transactions`, `chat_messages`, `expenses`, `bookings`, `routes`, `cars`, `users`, `subscription_plans`, `system_settings`;
+
+-- Table for system configuration
+CREATE TABLE IF NOT EXISTS `system_settings` (
+  `key_name` varchar(50) NOT NULL,
+  `value` varchar(255) NOT NULL,
+  PRIMARY KEY (`key_name`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- Insert default settings
+INSERT INTO `system_settings` (`key_name`, `value`) VALUES 
+('referral_discount_percent', '20'),
+('referral_program_enabled', 'true'),
+('email_notifications_enabled', 'false');
 
 -- Table structure for users first, as it's referenced
 CREATE TABLE IF NOT EXISTS `users` (
@@ -13,15 +28,23 @@ CREATE TABLE IF NOT EXISTS `users` (
   `phone` varchar(20) NOT NULL,
   `role` enum('Admin','Customer','Driver','Car Owner') NOT NULL,
   `password` varchar(255) NOT NULL,
-  `status` ENUM('Active', 'Deleted') NOT NULL DEFAULT 'Active',
+  `status` ENUM('Active', 'Deleted', 'PendingVerification') NOT NULL DEFAULT 'PendingVerification',
   `subscriptionPlanId` int(11) DEFAULT NULL,
   `subscriptionExpiryDate` date DEFAULT NULL,
   `profilePictureUrl` varchar(2048) DEFAULT NULL,
   `profilePictureData` LONGBLOB DEFAULT NULL,
   `qrCodeUrl` varchar(2048) DEFAULT NULL,
+  `referralCode` varchar(10) DEFAULT NULL,
+  `referredBy` int(11) DEFAULT NULL,
+  `referralRewardAvailable` tinyint(1) DEFAULT 0,
+  `otp` varchar(6) DEFAULT NULL,
+  `otp_expiry` datetime DEFAULT NULL,
   PRIMARY KEY (`id`),
   UNIQUE KEY `email` (`email`),
-  UNIQUE KEY `phone` (`phone`)
+  UNIQUE KEY `phone` (`phone`),
+  UNIQUE KEY `referralCode` (`referralCode`),
+  KEY `referredBy` (`referredBy`),
+  CONSTRAINT `users_ibfk_referral` FOREIGN KEY (`referredBy`) REFERENCES `users` (`id`) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 -- Table structure for subscription plans
@@ -45,20 +68,20 @@ ALTER TABLE `users`
 ADD KEY `subscriptionPlanId` (`subscriptionPlanId`),
 ADD CONSTRAINT `users_ibfk_1` FOREIGN KEY (`subscriptionPlanId`) REFERENCES `subscription_plans` (`id`) ON DELETE SET NULL;
 
--- Dumping data for table `users` (with NULL subscriptions initially to break circular dependency)
-INSERT INTO `users` (`id`, `name`, `email`, `phone`, `role`, `password`, `status`, `subscriptionPlanId`, `subscriptionExpiryDate`, `profilePictureUrl`, `qrCodeUrl`) VALUES
-(1, 'Admin User', 'admin@cablink.com', '9876543210', 'Admin', '$2a$10$w2DR5Xv2/HHn542C1si49uS0m7b6plu2vI3A.Lz6zK8z9w3x1v4wK', 'Active', NULL, NULL, 'https://picsum.photos/id/237/200', NULL),
-(2, 'Customer User', 'customer@cablink.com', '9123456789', 'Customer', '$2a$10$w2DR5Xv2/HHn542C1si49uS0m7b6plu2vI3A.Lz6zK8z9w3x1v4wK', 'Active', NULL, NULL, 'https://picsum.photos/id/238/200', NULL),
-(3, 'Ramesh Patel', 'driver@cablink.com', '9820098200', 'Driver', '$2a$10$w2DR5Xv2/HHn542C1si49uS0m7b6plu2vI3A.Lz6zK8z9w3x1v4wK', 'Active', NULL, NULL, 'https://picsum.photos/id/239/200', 'https://i.imgur.com/HFAw13v.png'),
-(4, 'Suresh Kumar', 'suresh@cablink.com', '9870098700', 'Driver', '$2a$10$w2DR5Xv2/HHn542C1si49uS0m7b6plu2vI3A.Lz6zK8z9w3x1v4wK', 'Active', NULL, NULL, 'https://picsum.photos/id/240/200', NULL),
-(5, 'Anil Gupta', 'anil@cablink.com', '9988776655', 'Driver', '$2a$10$w2DR5Xv2/HHn542C1si49uS0m7b6plu2vI3A.Lz6zK8z9w3x1v4wK', 'Active', NULL, NULL, 'https://picsum.photos/id/241/200', NULL),
-(6, 'Car Owner User', 'owner@cablink.com', '9999988888', 'Car Owner', '$2a$10$w2DR5Xv2/HHn542C1si49uS0m7b6plu2vI3A.Lz6zK8z9w3x1v4wK', 'Active', NULL, NULL, 'https://picsum.photos/id/242/200', 'https://i.imgur.com/HFAw13v.png');
+-- Dumping data for table `users`
+-- IDs: 1=Admin, 2=Customer, 3=Driver, 4=Car Owner
+-- Passwords are set to phone numbers as requested
+INSERT INTO `users` (`id`, `name`, `email`, `phone`, `role`, `password`, `status`, `subscriptionPlanId`, `subscriptionExpiryDate`, `profilePictureUrl`, `qrCodeUrl`, `referralCode`, `referralRewardAvailable`) VALUES
+(1, 'Admin', 'admin@cablink.com', '9552891578', 'Admin', '9552891578', 'Active', NULL, NULL, 'https://picsum.photos/id/237/200', NULL, 'ADMIN01', 0),
+(2, 'Customer', 'customer@cablink.com', '9960891939', 'Customer', '9960891939', 'Active', NULL, NULL, 'https://picsum.photos/id/238/200', NULL, 'CUST001', 1), -- Has a reward available for demo
+(3, 'Driver', 'driver@cablink.com', '7028252815', 'Driver', '7028252815', 'Active', NULL, NULL, 'https://picsum.photos/id/239/200', 'https://i.imgur.com/HFAw13v.png', 'DRV001', 0),
+(4, 'Car Owner', 'owner@cablink.com', '9730639931', 'Car Owner', '9730639931', 'Active', NULL, NULL, 'https://picsum.photos/id/242/200', 'https://i.imgur.com/HFAw13v.png', 'OWN001', 0);
 
 -- Dumping data for table `subscription_plans`
 INSERT INTO `subscription_plans` (`id`, `name`, `durationMonths`, `price`, `customerDiscountPercent`, `providerId`, `providerRole`, `providerName`, `status`) VALUES
 (1, 'Global Prime - 1 Month', 1, 999.00, 10, 1, 'Admin', 'Admin', 'Active'),
 (2, 'Global Prime - 6 Months', 6, 4999.00, 15, 1, 'Admin', 'Admin', 'Active'),
-(3, 'Ramesh Patel''s Fan Club', 3, 599.00, 20, 3, 'Driver', 'Ramesh Patel', 'Active');
+(3, 'Super Driver Club', 3, 599.00, 20, 3, 'Driver', 'Driver', 'Active');
 
 -- Update user subscriptions after plans are created
 UPDATE `users` SET `subscriptionPlanId` = 3, `subscriptionExpiryDate` = DATE_ADD(CURDATE(), INTERVAL 3 MONTH) WHERE `id` = 2;
@@ -79,16 +102,17 @@ CREATE TABLE IF NOT EXISTS `cars` (
   `latitude` DECIMAL(10, 8) DEFAULT NULL,
   `longitude` DECIMAL(11, 8) DEFAULT NULL,
   PRIMARY KEY (`id`),
+  UNIQUE KEY `carNumber` (`carNumber`),
   KEY `driverId` (`driverId`),
   CONSTRAINT `cars_ibfk_1` FOREIGN KEY (`driverId`) REFERENCES `users` (`id`) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 -- Dumping data for table `cars`
+-- Car 1 assigned to Driver (3), Car 2 assigned to Driver (3), Car 3 assigned to Car Owner (4)
 INSERT INTO `cars` (`id`, `carNumber`, `model`, `driverId`, `capacity`, `pricePerKm`, `minKmPerDay`, `imageUrl`, `status`, `subscriptionExpiryDate`, `latitude`, `longitude`) VALUES
-(1, 'MH-12-AB-1234', 'Toyota Innova', 3, 7, 15.00, 150, 'https://picsum.photos/id/111/400/250', 'Active', DATE_ADD(CURDATE(), INTERVAL 6 MONTH), 18.5204, 73.8567),
-(2, 'DL-03-CD-5678', 'Maruti Suzuki Dzire', 4, 4, 12.00, 100, 'https://picsum.photos/id/1071/400/250', 'Active', DATE_ADD(CURDATE(), INTERVAL 12 MONTH), 28.7041, 77.1025),
-(3, 'KA-05-EF-9012', 'Hyundai Verna', 5, 4, 14.00, NULL, 'https://picsum.photos/id/1075/400/250', 'Pending Approval', DATE_ADD(CURDATE(), INTERVAL 1 MONTH), 12.9716, 77.5946),
-(4, 'PB-01-GH-3456', 'Mahindra XUV700', 6, 7, 18.00, 200, 'https://picsum.photos/id/1076/400/250', 'Pending Payment', NULL, 30.7333, 76.7794);
+(1, 'MH12AB1234', 'Toyota Innova', 3, 7, 15.00, 150, 'https://picsum.photos/id/111/400/250', 'Active', DATE_ADD(CURDATE(), INTERVAL 6 MONTH), 18.5204, 73.8567),
+(2, 'DL03CD5678', 'Maruti Suzuki Dzire', 3, 4, 12.00, 100, 'https://picsum.photos/id/1071/400/250', 'Active', DATE_ADD(CURDATE(), INTERVAL 12 MONTH), 28.7041, 77.1025),
+(3, 'PB01GH3456', 'Mahindra XUV700', 4, 7, 18.00, 200, 'https://picsum.photos/id/1076/400/250', 'Pending Payment', NULL, 30.7333, 76.7794);
 
 
 -- Table structure for routes
@@ -115,7 +139,7 @@ CREATE TABLE IF NOT EXISTS `routes` (
 INSERT INTO `routes` (`id`, `from`, `to`, `date`, `time`, `price`, `carId`, `seatsOffered`, `from_lat`, `from_lng`) VALUES
 (1, 'Mumbai Airport', 'Pune City', DATE_ADD(CURDATE(), INTERVAL 2 DAY), '10:00:00', 500.00, 1, 6, 19.0896, 72.8656),
 (2, 'Delhi Station', 'Gurgaon Sector 29', DATE_ADD(CURDATE(), INTERVAL 3 DAY), '14:00:00', 200.00, 2, 4, 28.642, 77.219),
-(3, 'Bangalore Airport', 'Koramangala', DATE_ADD(CURDATE(), INTERVAL 4 DAY), '19:00:00', 300.00, 3, 4, 13.1989, 77.7068);
+(3, 'Bangalore Airport', 'Koramangala', DATE_ADD(CURDATE(), INTERVAL 4 DAY), '19:00:00', 300.00, 1, 4, 13.1989, 77.7068);
 
 
 -- Table structure for bookings
@@ -139,6 +163,7 @@ CREATE TABLE IF NOT EXISTS `bookings` (
   `parcelDescription` text DEFAULT NULL,
   `recipientName` varchar(255) DEFAULT NULL,
   `recipientPhone` varchar(20) DEFAULT NULL,
+  `discountApplied` decimal(10,2) DEFAULT 0.00,
   PRIMARY KEY (`id`),
   KEY `userId` (`userId`),
   KEY `routeId` (`routeId`),
@@ -173,8 +198,7 @@ CREATE TABLE IF NOT EXISTS `expenses` (
 INSERT INTO `expenses` (`id`, `carId`, `expenseType`, `amount`, `date`, `description`) VALUES
 (1, 1, 'Fuel', 3000.00, DATE_SUB(CURDATE(), INTERVAL 10 DAY), 'Full tank'),
 (2, 2, 'Servicing', 5000.00, DATE_SUB(CURDATE(), INTERVAL 5 DAY), 'Oil change and inspection'),
-(3, 1, 'Driver', 15000.00, DATE_SUB(CURDATE(), INTERVAL 1 DAY), 'Monthly salary'),
-(4, 3, 'Tires', 8000.00, DATE_SUB(CURDATE(), INTERVAL 2 DAY), 'New set of tires');
+(3, 1, 'Driver', 15000.00, DATE_SUB(CURDATE(), INTERVAL 1 DAY), 'Monthly salary');
 
 -- Table structure for chat messages
 CREATE TABLE IF NOT EXISTS `chat_messages` (

@@ -2,26 +2,43 @@ const express = require('express');
 const router = express.Router();
 const db = require('../db');
 
-// GET all subscription plans
+// GET all subscription plans (Paginated with Filters)
 router.get('/plans', async (req, res) => {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 10;
     const offset = (page - 1) * limit;
+    const { search, providerId } = req.query;
+
+    let whereClauses = ["status = 'Active'"];
+    let queryParams = [];
+
+    if (search) {
+        whereClauses.push("name LIKE ?");
+        queryParams.push(`%${search}%`);
+    }
+
+    if (providerId && providerId !== 'All') {
+        whereClauses.push("providerId = ?");
+        queryParams.push(providerId);
+    }
+
+    const whereSql = whereClauses.join(' AND ');
 
     try {
-        const [[{ totalItems }]] = await db.query("SELECT COUNT(*) as totalItems FROM subscription_plans WHERE status = 'Active'");
+        const countQuery = `SELECT COUNT(*) as totalItems FROM subscription_plans WHERE ${whereSql}`;
+        const [[{ totalItems }]] = await db.query(countQuery, queryParams);
         const totalPages = Math.ceil(totalItems / limit);
 
         const query = `
             SELECT sp.*, u.name as providerName 
             FROM subscription_plans sp
             JOIN users u ON sp.providerId = u.id
-            WHERE sp.status = 'Active'
+            WHERE ${whereSql}
             ORDER BY sp.providerRole, sp.durationMonths ASC
             LIMIT ?
             OFFSET ?
         `;
-        const [plans] = await db.query(query, [limit, offset]);
+        const [plans] = await db.query(query, [...queryParams, limit, offset]);
         res.json({
             items: plans,
             totalItems,
@@ -72,13 +89,6 @@ router.put('/plans/:id', async (req, res) => {
     // In a real app, you'd get providerId from a JWT token to verify ownership
     const { name, price, customerDiscountPercent } = req.body;
     try {
-        // This is a simplified authorization check. A real app would use middleware.
-        // const [planRows] = await db.query('SELECT providerId FROM subscription_plans WHERE id = ?', [id]);
-        // if (planRows.length === 0) return res.status(404).json({ message: 'Plan not found' });
-        // if (planRows[0].providerId !== req.user.id && req.user.role !== 'Admin') {
-        //     return res.status(403).json({ message: 'Unauthorized' });
-        // }
-        
         await db.query(
             'UPDATE subscription_plans SET name = ?, price = ?, customerDiscountPercent = ? WHERE id = ?',
             [name, price, customerDiscountPercent, id]

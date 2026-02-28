@@ -28,15 +28,32 @@ const formatCar = (car) => {
     return formatted;
 }
 
-// GET all cars with driver info
+// GET all cars with driver info and filters
 router.get('/', async (req, res) => {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 9;
     const offset = (page - 1) * limit;
-    const { lat, lng } = req.query;
+    const { lat, lng, search, status, driverId } = req.query;
+
+    let whereClauses = ["c.status != 'Deleted'"];
+    let queryParams = [];
+
+    if (search) {
+        whereClauses.push("(c.model LIKE ? OR c.carNumber LIKE ?)");
+        queryParams.push(`%${search}%`, `%${search}%`);
+    }
+    if (status && status !== 'All') {
+        whereClauses.push("c.status = ?");
+        queryParams.push(status);
+    }
+    if (driverId && driverId !== 'All') {
+        whereClauses.push("c.driverId = ?");
+        queryParams.push(driverId);
+    }
+
+    const whereSql = whereClauses.join(' AND ');
 
     let distanceSelection = '';
-    let distanceParams = [];
     let orderBy = 'c.id DESC';
 
     if (lat && lng) {
@@ -46,24 +63,43 @@ router.get('/', async (req, res) => {
                 sin(radians(?)) * sin(radians(c.latitude))
             )
         ) AS distance`;
-        distanceParams = [parseFloat(lat), parseFloat(lng), parseFloat(lat)];
-        orderBy = 'distance ASC';
+        // Insert distance params at the beginning because they appear in SELECT
+        // Actually, for the main query, we need to be careful with param order if using ? placeholders.
+        // It's safer to not mix select params with where params if order matters and is complex.
+        // However, mysql2 supports positional params. 
+        // We will append distance params to queryParams for the main query *after* the SELECT part? 
+        // No, params are substituted in order. 
+        // SELECT part comes first.
+        // So distance params first, then where params, then limit/offset.
     }
 
     try {
-        const [[{ totalItems }]] = await db.query("SELECT COUNT(*) as totalItems FROM cars WHERE status != 'Deleted'");
+        const countQuery = `SELECT COUNT(*) as totalItems FROM cars c WHERE ${whereSql}`;
+        const [[{ totalItems }]] = await db.query(countQuery, queryParams);
         const totalPages = Math.ceil(totalItems / limit);
+
+        let finalParams = [...queryParams]; // Start with WHERE params
+        
+        if (lat && lng) {
+             // If we use distance, we need to inject the params at the start
+             finalParams = [parseFloat(lat), parseFloat(lng), parseFloat(lat), ...queryParams];
+             orderBy = 'distance ASC';
+        }
 
         const query = `
             SELECT c.*, u.name as driverName, u.phone as driverPhone ${distanceSelection}
             FROM cars c
             LEFT JOIN users u ON c.driverId = u.id
-            WHERE c.status != 'Deleted'
+            WHERE ${whereSql}
             ORDER BY ${orderBy}
             LIMIT ?
             OFFSET ?
         `;
-        const [cars] = await db.query(query, [...distanceParams, limit, offset]);
+        
+        // Add limit and offset to the end
+        finalParams.push(limit, offset);
+
+        const [cars] = await db.query(query, finalParams);
         const formattedCars = cars.map(formatCar);
         
         res.json({
@@ -97,7 +133,7 @@ router.post('/', async (req, res) => {
     try {
         const [result] = await db.query(
             'INSERT INTO cars (carNumber, model, driverId, capacity, pricePerKm, minKmPerDay, imageUrl, imageData, status, latitude, longitude) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-            [carNumber, model, driverId || null, capacity, pricePerKm, minKmPerDay, imageUrlToSave, imageDataToSave, status || 'Pending Payment', latitude, longitude]
+            [carNumber.replace(/\s/g, '').toUpperCase(), model, driverId || null, capacity, pricePerKm, minKmPerDay, imageUrlToSave, imageDataToSave, status || 'Pending Payment', latitude, longitude]
         );
         
         const [[newCar]] = await db.query(`
@@ -110,6 +146,9 @@ router.post('/', async (req, res) => {
         res.status(201).json(formatCar(newCar));
 
     } catch (err) {
+        if (err.code === 'ER_DUP_ENTRY') {
+            return res.status(409).json({ message: 'A car with this number plate already exists.' });
+        }
         res.status(500).json({ message: err.message });
     }
 });
@@ -162,44 +201,44 @@ router.put('/:id', async (req, res) => {
     const { id } = req.params;
     const { carNumber, model, driverId, capacity, pricePerKm, minKmPerDay, imageData, storeAsBinary, status, subscriptionExpiryDate, latitude, longitude } = req.body;
 
-    // Fetch existing car to not overwrite fields that are not passed
-    const [[existingCar]] = await db.query('SELECT * FROM cars WHERE id = ?', [id]);
-    if (!existingCar) {
-        return res.status(404).json({ message: 'Car not found' });
-    }
-
-    const updatedCar = {
-        carNumber: carNumber ?? existingCar.carNumber,
-        model: model ?? existingCar.model,
-        driverId: driverId === 0 ? 0 : (driverId ?? existingCar.driverId),
-        capacity: capacity ?? existingCar.capacity,
-        pricePerKm: pricePerKm ?? existingCar.pricePerKm,
-        minKmPerDay: minKmPerDay ?? existingCar.minKmPerDay,
-        status: status ?? existingCar.status,
-        subscriptionExpiryDate: subscriptionExpiryDate ?? existingCar.subscriptionExpiryDate,
-        imageUrl: existingCar.imageUrl,
-        imageData: existingCar.imageData,
-        latitude: latitude ?? existingCar.latitude,
-        longitude: longitude ?? existingCar.longitude,
-    };
-    
-    if (imageData) {
-        if (storeAsBinary) {
-            updatedCar.imageData = Buffer.from(imageData, 'base64');
-            updatedCar.imageUrl = null;
-        } else {
-            updatedCar.imageUrl = `https://picsum.photos/id/${Math.floor(Math.random()*200)}/400/250`;
-            updatedCar.imageData = null;
-        }
-    }
-
-    const query = `UPDATE cars SET carNumber = ?, model = ?, driverId = ?, capacity = ?, pricePerKm = ?, minKmPerDay = ?, status = ?, subscriptionExpiryDate = ?, imageUrl = ?, imageData = ?, latitude = ?, longitude = ? WHERE id = ?`;
-    const queryParams = [
-        updatedCar.carNumber, updatedCar.model, updatedCar.driverId === 0 ? null : updatedCar.driverId, updatedCar.capacity, updatedCar.pricePerKm,
-        updatedCar.minKmPerDay, updatedCar.status, updatedCar.subscriptionExpiryDate, updatedCar.imageUrl, updatedCar.imageData, updatedCar.latitude, updatedCar.longitude, id
-    ];
-
     try {
+        // Fetch existing car to not overwrite fields that are not passed
+        const [[existingCar]] = await db.query('SELECT * FROM cars WHERE id = ?', [id]);
+        if (!existingCar) {
+            return res.status(404).json({ message: 'Car not found' });
+        }
+
+        const updatedCar = {
+            carNumber: carNumber ? carNumber.replace(/\s/g, '').toUpperCase() : existingCar.carNumber,
+            model: model ?? existingCar.model,
+            driverId: driverId === 0 ? 0 : (driverId ?? existingCar.driverId),
+            capacity: capacity ?? existingCar.capacity,
+            pricePerKm: pricePerKm ?? existingCar.pricePerKm,
+            minKmPerDay: minKmPerDay ?? existingCar.minKmPerDay,
+            status: status ?? existingCar.status,
+            subscriptionExpiryDate: subscriptionExpiryDate ?? existingCar.subscriptionExpiryDate,
+            imageUrl: existingCar.imageUrl,
+            imageData: existingCar.imageData,
+            latitude: latitude ?? existingCar.latitude,
+            longitude: longitude ?? existingCar.longitude,
+        };
+        
+        if (imageData) {
+            if (storeAsBinary) {
+                updatedCar.imageData = Buffer.from(imageData, 'base64');
+                updatedCar.imageUrl = null;
+            } else {
+                updatedCar.imageUrl = `https://picsum.photos/id/${Math.floor(Math.random()*200)}/400/250`;
+                updatedCar.imageData = null;
+            }
+        }
+
+        const query = `UPDATE cars SET carNumber = ?, model = ?, driverId = ?, capacity = ?, pricePerKm = ?, minKmPerDay = ?, status = ?, subscriptionExpiryDate = ?, imageUrl = ?, imageData = ?, latitude = ?, longitude = ? WHERE id = ?`;
+        const queryParams = [
+            updatedCar.carNumber, updatedCar.model, updatedCar.driverId === 0 ? null : updatedCar.driverId, updatedCar.capacity, updatedCar.pricePerKm,
+            updatedCar.minKmPerDay, updatedCar.status, updatedCar.subscriptionExpiryDate, updatedCar.imageUrl, updatedCar.imageData, updatedCar.latitude, updatedCar.longitude, id
+        ];
+
         await db.query(query, queryParams);
         const [[refetchedCar]] = await db.query(`
             SELECT c.*, u.name as driverName, u.phone as driverPhone 
@@ -209,6 +248,9 @@ router.put('/:id', async (req, res) => {
         `, [id]);
         res.json(formatCar(refetchedCar));
     } catch (err) {
+        if (err.code === 'ER_DUP_ENTRY') {
+            return res.status(409).json({ message: 'A car with this number plate already exists.' });
+        }
         res.status(500).json({ message: err.message });
     }
 });

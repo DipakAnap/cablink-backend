@@ -2,18 +2,34 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../db');
+const smsService = require('../services/sms.service');
+const emailService = require('../services/email.service');
 
-// Helper function to create notifications
+// Helper to check if email is enabled
+const isEmailEnabled = async () => {
+    try {
+        const [settings] = await db.query("SELECT value FROM system_settings WHERE key_name = 'email_notifications_enabled'");
+        return settings.length > 0 && settings[0].value === 'true';
+    } catch (e) {
+        return false;
+    }
+};
+
+// Helper function to create notifications and send SMS/Email
 const createNotifications = async (bookingId, userId, type) => {
     try {
         const [[bookingData]] = await db.query('SELECT * FROM bookings WHERE id = ?', [bookingId]);
         if (!bookingData) return;
 
         let message = '';
+        let subject = '';
+        
         if (type === 'BookingConfirmation') {
-            message = `Your booking #${bookingId} is confirmed. Total: INR ${bookingData.totalPrice}.`;
+            subject = `Booking Confirmation - #${bookingId}`;
+            message = `CabLink: Booking #${bookingId} confirmed. Total: INR ${bookingData.totalPrice}.`;
         } else if (type === 'BookingCancellation') {
-            message = `Your booking #${bookingId} has been cancelled.`;
+            subject = `Booking Cancellation - #${bookingId}`;
+            message = `CabLink: Booking #${bookingId} has been cancelled.`;
         }
         
         const channels = ['Email', 'SMS', 'WhatsApp'];
@@ -27,6 +43,19 @@ const createNotifications = async (bookingId, userId, type) => {
                 [notifications]
             );
         }
+
+        const [[user]] = await db.query('SELECT phone, email FROM users WHERE id = ?', [userId]);
+        if (user) {
+            // Send SMS
+            if (user.phone) {
+                await smsService.sendSms(user.phone, message);
+            }
+            // Send Email if enabled
+            if (user.email && await isEmailEnabled()) {
+                await emailService.sendEmail(user.email, subject, message, `<p>${message}</p>`);
+            }
+        }
+
     } catch (error) {
         console.error('Failed to create notifications:', error);
     }
@@ -50,6 +79,7 @@ const formatBooking = (b) => {
         startDate: b.startDate,
         endDate: b.endDate,
         actualDistanceKm: b.actualDistanceKm,
+        discountApplied: b.discountApplied,
         user: { id: b.userId, name: b.userName, phone: b.userPhone },
         car: b.carIdResolved ? { 
             id: b.carIdResolved, 
@@ -80,6 +110,7 @@ router.get('/', async (req, res) => {
     const carId = req.query.carId;
     const bookingType = req.query.type;
     const date = req.query.date;
+    const routeId = req.query.routeId;
 
     let whereClauses = ['1=1'];
     let queryParams = [];
@@ -95,6 +126,10 @@ router.get('/', async (req, res) => {
     if (date) {
         whereClauses.push('(r.date = ? OR DATE(b.startDate) = ?)');
         queryParams.push(date, date);
+    }
+    if (routeId) {
+        whereClauses.push('b.routeId = ?');
+        queryParams.push(routeId);
     }
 
     const whereString = whereClauses.join(' AND ');
@@ -169,10 +204,24 @@ router.post('/route', async (req, res) => {
             finalPrice *= (1 - (driver.customerDiscountPercent / 100));
         }
 
+        // Apply Referral Discount if applicable
+        const [userRows] = await db.query('SELECT referralRewardAvailable FROM users WHERE id = ?', [userId]);
+        let discountApplied = 0;
+        if (userRows.length > 0 && userRows[0].referralRewardAvailable) {
+            const [settingRows] = await db.query('SELECT value FROM system_settings WHERE key_name = "referral_discount_percent"');
+            const percent = settingRows.length > 0 ? parseFloat(settingRows[0].value) : 0;
+            if (percent > 0) {
+                discountApplied = finalPrice * (percent / 100);
+                finalPrice -= discountApplied;
+                // Mark reward as used
+                await db.query('UPDATE users SET referralRewardAvailable = 0 WHERE id = ?', [userId]);
+            }
+        }
+
         const bookingDate = new Date().toISOString().split('T')[0];
         const [result] = await db.query(
-            'INSERT INTO bookings (userId, bookingDate, bookingType, status, paymentStatus, totalPrice, routeId, seatsBooked) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-            [userId, bookingDate, 'Route', 'Confirmed', paymentStatus || 'Pending', finalPrice, routeId, seatsToBook]
+            'INSERT INTO bookings (userId, bookingDate, bookingType, status, paymentStatus, totalPrice, routeId, seatsBooked, discountApplied) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            [userId, bookingDate, 'Route', 'Confirmed', paymentStatus || 'Pending', finalPrice, routeId, seatsToBook, discountApplied]
         );
         
         if (paymentDetails) {
@@ -185,7 +234,7 @@ router.post('/route', async (req, res) => {
         // Create notifications
         await createNotifications(result.insertId, userId, 'BookingConfirmation');
 
-        res.status(201).json({ id: result.insertId, ...req.body, totalPrice: finalPrice, bookingDate, status: 'Confirmed', bookingType: 'Route' });
+        res.status(201).json({ id: result.insertId, ...req.body, totalPrice: finalPrice, bookingDate, status: 'Confirmed', bookingType: 'Route', discountApplied });
     } catch (err) {
         res.status(500).json({ message: err.message });
     }
@@ -195,23 +244,39 @@ router.post('/route', async (req, res) => {
 router.post('/private', async (req, res) => {
     const { userId, carId, pickupLocation, dropoffLocation, startDate, endDate, seatsBooked, paymentStatus, totalPrice, estimatedDistanceKm, paymentDetails } = req.body;
     try {
+        let finalPrice = totalPrice;
+        
+        // Apply Referral Discount if applicable
+        const [userRows] = await db.query('SELECT referralRewardAvailable FROM users WHERE id = ?', [userId]);
+        let discountApplied = 0;
+        if (userRows.length > 0 && userRows[0].referralRewardAvailable) {
+            const [settingRows] = await db.query('SELECT value FROM system_settings WHERE key_name = "referral_discount_percent"');
+            const percent = settingRows.length > 0 ? parseFloat(settingRows[0].value) : 0;
+            if (percent > 0) {
+                discountApplied = finalPrice * (percent / 100);
+                finalPrice -= discountApplied;
+                // Mark reward as used
+                await db.query('UPDATE users SET referralRewardAvailable = 0 WHERE id = ?', [userId]);
+            }
+        }
+
         const bookingDate = new Date().toISOString().split('T')[0];
         const [result] = await db.query(
-            'INSERT INTO bookings (userId, bookingDate, bookingType, status, paymentStatus, totalPrice, carId, pickupLocation, dropoffLocation, startDate, endDate, seatsBooked, actualDistanceKm) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-            [userId, bookingDate, 'Private', 'Confirmed', paymentStatus || 'Pending', totalPrice, carId, pickupLocation, dropoffLocation, startDate, endDate, seatsBooked, estimatedDistanceKm]
+            'INSERT INTO bookings (userId, bookingDate, bookingType, status, paymentStatus, totalPrice, carId, pickupLocation, dropoffLocation, startDate, endDate, seatsBooked, actualDistanceKm, discountApplied) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            [userId, bookingDate, 'Private', 'Confirmed', paymentStatus || 'Pending', finalPrice, carId, pickupLocation, dropoffLocation, startDate, endDate, seatsBooked, estimatedDistanceKm, discountApplied]
         );
 
         if (paymentDetails) {
             await db.query(
                 'INSERT INTO payment_transactions (booking_id, transaction_type, amount, gateway_transaction_id) VALUES (?, ?, ?, ?)',
-                [result.insertId, 'Booking', totalPrice, paymentDetails.transactionId]
+                [result.insertId, 'Booking', finalPrice, paymentDetails.transactionId]
             );
         }
 
         // Create notifications
         await createNotifications(result.insertId, userId, 'BookingConfirmation');
 
-        res.status(201).json({ id: result.insertId, ...req.body, bookingDate, status: 'Confirmed', bookingType: 'Private' });
+        res.status(201).json({ id: result.insertId, ...req.body, totalPrice: finalPrice, bookingDate, status: 'Confirmed', bookingType: 'Private', discountApplied });
     } catch (err) {
         res.status(500).json({ message: err.message });
     }
@@ -222,22 +287,28 @@ router.put('/:id/seats', async (req, res) => {
     const { id } = req.params;
     const { newSeatCount, routeId } = req.body;
      try {
-        const [bookingRows] = await db.query('SELECT r.price, c.driverId FROM bookings b JOIN routes r ON b.routeId = r.id JOIN cars c ON r.carId = c.id WHERE b.id = ?', [id]);
+        const [bookingRows] = await db.query('SELECT r.price, c.driverId, b.discountApplied, b.seatsBooked, b.totalPrice FROM bookings b JOIN routes r ON b.routeId = r.id JOIN cars c ON r.carId = c.id WHERE b.id = ?', [id]);
         if (bookingRows.length === 0) return res.status(404).json({ message: 'Booking or related info not found' });
 
+        const booking = bookingRows[0];
         const [driverRows] = await db.query(`
             SELECT u.subscriptionPlanId, u.subscriptionExpiryDate, sp.customerDiscountPercent
             FROM users u LEFT JOIN subscription_plans sp ON u.subscriptionPlanId = sp.id
             WHERE u.id = ?
-        `, [bookingRows[0].driverId]);
+        `, [booking.driverId]);
 
-        let pricePerSeat = bookingRows[0].price;
+        let pricePerSeat = booking.price;
         const driver = driverRows[0];
         if (driver && driver.subscriptionPlanId && new Date(driver.subscriptionExpiryDate) > new Date()) {
             pricePerSeat *= (1 - (driver.customerDiscountPercent / 100));
         }
         
-        const newTotalPrice = pricePerSeat * newSeatCount;
+        let newTotalPrice = pricePerSeat * newSeatCount;
+        
+        if (booking.discountApplied > 0) {
+             newTotalPrice = Math.max(0, newTotalPrice - booking.discountApplied);
+        }
+
         await db.query(
             'UPDATE bookings SET seatsBooked = ?, totalPrice = ? WHERE id = ?',
             [newSeatCount, newTotalPrice, id]
@@ -253,9 +324,13 @@ router.put('/:id/seats', async (req, res) => {
 router.put('/:id/cancel', async (req, res) => {
     const { id } = req.params;
     try {
-        const [[booking]] = await db.query('SELECT userId FROM bookings WHERE id = ?', [id]);
+        const [[booking]] = await db.query('SELECT userId, discountApplied FROM bookings WHERE id = ?', [id]);
         if (booking) {
             await db.query('UPDATE bookings SET status = ? WHERE id = ?', ['Cancelled', id]);
+            // Restore referral reward if it was used
+            if (booking.discountApplied > 0) {
+                await db.query('UPDATE users SET referralRewardAvailable = 1 WHERE id = ?', [booking.userId]);
+            }
             await createNotifications(id, booking.userId, 'BookingCancellation');
             res.json({ message: 'Booking cancelled' });
         } else {
@@ -278,6 +353,38 @@ router.put('/:id/payment', async (req, res) => {
     try {
         await db.query('UPDATE bookings SET paymentStatus = ? WHERE id = ?', [status, id]);
         res.json({ message: 'Payment status updated' });
+    } catch (err) {
+        res.status(500).json({ message: err.message });
+    }
+});
+
+// PUT to update booking status (e.g. Completed) and Trigger Referral Reward
+router.put('/:id/status', async (req, res) => {
+    const { id } = req.params;
+    const { status } = req.body;
+    
+    try {
+        await db.query('UPDATE bookings SET status = ? WHERE id = ?', [status, id]);
+        
+        if (status === 'Completed') {
+            const [[booking]] = await db.query('SELECT userId FROM bookings WHERE id = ?', [id]);
+            if (booking) {
+                // Check if this is the first completed booking for the user
+                const [[countResult]] = await db.query('SELECT COUNT(*) as count FROM bookings WHERE userId = ? AND status = "Completed"', [booking.userId]);
+                
+                if (countResult.count === 1) {
+                    // It's the first completed ride! Check for referrer.
+                    const [[user]] = await db.query('SELECT referredBy FROM users WHERE id = ?', [booking.userId]);
+                    if (user && user.referredBy) {
+                        // Grant reward to referrer
+                        await db.query('UPDATE users SET referralRewardAvailable = 1 WHERE id = ?', [user.referredBy]);
+                        console.log(`Referral reward granted to user ${user.referredBy}`);
+                    }
+                }
+            }
+        }
+
+        res.json({ message: 'Booking status updated' });
     } catch (err) {
         res.status(500).json({ message: err.message });
     }
@@ -317,11 +424,24 @@ router.put('/:id/finalize', async (req, res) => {
         } else {
             return res.status(400).json({ message: 'actualDistanceKm or finalPrice is required.' });
         }
+        
+        if (booking.discountApplied > 0) {
+             newTotalPrice = Math.max(0, newTotalPrice - booking.discountApplied);
+        }
 
         await db.query(
             'UPDATE bookings SET status = ?, totalPrice = ?, actualDistanceKm = ? WHERE id = ?',
             ['Completed', newTotalPrice.toFixed(2), actualDistanceKm, id]
         );
+        
+        // Trigger referral check logic (Duplicate of /status logic but specific to finalize)
+        const [[countResult]] = await db.query('SELECT COUNT(*) as count FROM bookings WHERE userId = ? AND status = "Completed"', [booking.userId]);
+        if (countResult.count === 1) {
+            const [[user]] = await db.query('SELECT referredBy FROM users WHERE id = ?', [booking.userId]);
+            if (user && user.referredBy) {
+                await db.query('UPDATE users SET referralRewardAvailable = 1 WHERE id = ?', [user.referredBy]);
+            }
+        }
         
         const refetchQuery = `
             SELECT 
