@@ -1,6 +1,5 @@
 
 -- Create the database if it doesn't exist
-drop database if exists cablink_db;
 CREATE DATABASE IF NOT EXISTS cablink_db;
 USE cablink_db;
 

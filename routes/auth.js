@@ -62,6 +62,14 @@ router.post('/login', async (req, res) => {
         
         if (rows.length > 0) {
             const user = rows[0];
+
+            // Check if password is not set
+            if (user.password === 'PASSWORD_NOT_SET') {
+                return res.status(403).json({ 
+                    message: 'Your account was created by an administrator and no password has been set yet. Please use the "Login with OTP" or "Forgot Password" feature to set your password.',
+                    code: 'PASSWORD_NOT_SET'
+                });
+            }
             
             // Check password
             let match = false;
@@ -90,8 +98,8 @@ router.post('/login', async (req, res) => {
 router.post('/signup', async (req, res) => {
     const { name, email, role, password, phone } = req.body;
 
-    if (!name || !role || !password || !phone) {
-        return res.status(400).json({ message: 'Name, role, password, and phone number are required.' });
+    if (!name || !role || !phone) {
+        return res.status(400).json({ message: 'Name, role, and phone number are required.' });
     }
 
     const saltRounds = 10;
@@ -116,7 +124,10 @@ router.post('/signup', async (req, res) => {
             else newReferralCode = Math.random().toString(36).substring(2, 8).toUpperCase();
         }
 
-        const hashedPassword = await bcrypt.hash(password, saltRounds);
+        let hashedPassword = 'PASSWORD_NOT_SET';
+        if (password) {
+            hashedPassword = await bcrypt.hash(password, saltRounds);
+        }
 
         const [result] = await db.query(
             'INSERT INTO users (name, email, phone, role, password, referralCode, status) VALUES (?, ?, ?, ?, ?, ?, ?)',
