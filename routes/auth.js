@@ -2,8 +2,11 @@ const express = require('express');
 const router = express.Router();
 const db = require('../db');
 const bcrypt = require('bcrypt');
+const jwt = require('jsonwebtoken');
 const smsService = require('../services/sms.service');
 const emailService = require('../services/email.service');
+
+const JWT_SECRET = process.env.JWT_SECRET || 'default_secret_key_change_in_production';
 
 const formatUser = (user) => {
     if (user.profilePictureData) {
@@ -19,6 +22,14 @@ const formatUser = (user) => {
     // Convert tinyint to boolean
     user.referralRewardAvailable = !!user.referralRewardAvailable;
     return user;
+};
+
+const generateToken = (user) => {
+    return jwt.sign(
+        { id: user.id, role: user.role, email: user.email, phone: user.phone },
+        JWT_SECRET,
+        { expiresIn: '24h' }
+    );
 };
 
 // Helper to check if email is enabled
@@ -61,7 +72,9 @@ router.post('/login', async (req, res) => {
             }
 
             if (match) {
-                res.json(formatUser(user));
+                const token = generateToken(user);
+                const userData = formatUser(user);
+                res.json({ ...userData, token });
             } else {
                 res.status(401).json({ message: 'Invalid credentials' });
             }
@@ -110,7 +123,10 @@ router.post('/signup', async (req, res) => {
             [name, email || null, phone, role, hashedPassword, newReferralCode, 'Active']
         );
         const [[newUser]] = await db.query('SELECT * FROM users WHERE id = ?', [result.insertId]);
-        res.status(201).json(formatUser(newUser));
+        
+        const token = generateToken(newUser);
+        const userData = formatUser(newUser);
+        res.status(201).json({ ...userData, token });
 
     } catch (error) {
         console.error(error);
@@ -223,7 +239,10 @@ router.post('/signup-verify', async (req, res) => {
         );
 
         const [[activeUser]] = await db.query("SELECT * FROM users WHERE id = ?", [user.id]);
-        res.json(formatUser(activeUser));
+        
+        const token = generateToken(activeUser);
+        const userData = formatUser(activeUser);
+        res.json({ ...userData, token });
 
     } catch (error) {
         console.error(error);
@@ -445,7 +464,9 @@ router.post('/login-with-otp', async (req, res) => {
             
             // Allow simulated '123456' for demo purposes
             if (otp === '123456') {
-                 res.json(formatUser(user));
+                 const token = generateToken(user);
+                 const userData = formatUser(user);
+                 res.json({ ...userData, token });
                  return;
             }
 
@@ -456,7 +477,9 @@ router.post('/login-with-otp', async (req, res) => {
                 
                 if (now <= expiry) {
                     await db.query("UPDATE users SET otp = NULL, otp_expiry = NULL WHERE id = ?", [user.id]);
-                    res.json(formatUser(user));
+                    const token = generateToken(user);
+                    const userData = formatUser(user);
+                    res.json({ ...userData, token });
                 } else {
                     res.status(401).json({ message: 'OTP has expired.' });
                 }

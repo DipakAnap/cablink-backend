@@ -255,13 +255,72 @@ router.put('/:id', async (req, res) => {
     }
 });
 
+const { sendEmail } = require('../services/email.service');
+const { sendSms } = require('../services/sms.service');
+
 // DELETE a car
 router.delete('/:id', async (req, res) => {
     const { id } = req.params;
     try {
+        // 1. Check if car exists
+        const [[car]] = await db.query('SELECT * FROM cars WHERE id = ?', [id]);
+        if (!car) {
+            return res.status(404).json({ message: 'Car not found' });
+        }
+
+        // 2. Find active bookings (Confirmed or Pending) linked to this car directly OR via its routes
+        // We need user details for notifications
+        const [bookings] = await db.query(`
+            SELECT b.id, b.userId, u.email, u.phone, u.name, b.bookingDate, b.bookingType
+            FROM bookings b
+            JOIN users u ON b.userId = u.id
+            LEFT JOIN routes r ON b.routeId = r.id
+            WHERE 
+                (b.carId = ? OR r.carId = ?) 
+                AND b.status IN ('Confirmed', 'Pending')
+        `, [id, id]);
+
+        // 3. Cancel these bookings and send notifications
+        if (bookings.length > 0) {
+            const bookingIds = bookings.map(b => b.id);
+            await db.query(`UPDATE bookings SET status = 'Cancelled' WHERE id IN (?)`, [bookingIds]);
+
+            // 4. Send notifications
+            // We use Promise.all to send notifications in parallel but catch errors individually so one failure doesn't stop others
+            await Promise.all(bookings.map(async (booking) => {
+                const message = `Dear ${booking.name}, your booking (ID: ${booking.id}) for ${new Date(booking.bookingDate).toLocaleDateString()} has been cancelled because the assigned car is no longer available. We apologize for the inconvenience.`;
+                
+                const notifications = [];
+                // Send Email
+                if (booking.email) {
+                     notifications.push(sendEmail(booking.email, 'Booking Cancelled - CabLink', message, `<p>${message}</p>`));
+                }
+                
+                // Send SMS
+                if (booking.phone) {
+                     notifications.push(sendSms(booking.phone, message));
+                }
+                
+                try {
+                    await Promise.all(notifications);
+                } catch (notifyErr) {
+                    console.error(`Failed to notify user ${booking.userId} for booking ${booking.id}:`, notifyErr);
+                }
+            }));
+        }
+
+        // 5. Delete/Cancel Routes associated with this car
+        await db.query("UPDATE routes SET status = 'Deleted' WHERE carId = ?", [id]);
+
+        // 6. Delete the car (Soft delete)
         await db.query("UPDATE cars SET status = 'Deleted' WHERE id = ?", [id]);
-        res.json({ message: 'Car deleted successfully' });
+
+        res.json({ 
+            message: 'Car deleted successfully. Associated bookings were cancelled and customers notified.',
+            cancelledBookingsCount: bookings.length
+        });
     } catch (err) {
+        console.error('Error deleting car:', err);
         res.status(500).json({ message: err.message });
     }
 });

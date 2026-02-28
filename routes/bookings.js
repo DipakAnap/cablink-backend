@@ -111,6 +111,8 @@ router.get('/', async (req, res) => {
     const bookingType = req.query.type;
     const date = req.query.date;
     const routeId = req.query.routeId;
+    const userId = req.query.userId;
+    const driverId = req.query.driverId;
 
     let whereClauses = ['1=1'];
     let queryParams = [];
@@ -130,6 +132,14 @@ router.get('/', async (req, res) => {
     if (routeId) {
         whereClauses.push('b.routeId = ?');
         queryParams.push(routeId);
+    }
+    if (userId) {
+        whereClauses.push('b.userId = ?');
+        queryParams.push(userId);
+    }
+    if (driverId) {
+        whereClauses.push('c.driverId = ?');
+        queryParams.push(driverId);
     }
 
     const whereString = whereClauses.join(' AND ');

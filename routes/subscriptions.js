@@ -9,23 +9,23 @@ router.get('/plans', async (req, res) => {
     const offset = (page - 1) * limit;
     const { search, providerId } = req.query;
 
-    let whereClauses = ["status = 'Active'"];
+    let whereClauses = ["sp.status = 'Active'"];
     let queryParams = [];
 
     if (search) {
-        whereClauses.push("name LIKE ?");
+        whereClauses.push("sp.name LIKE ?");
         queryParams.push(`%${search}%`);
     }
 
     if (providerId && providerId !== 'All') {
-        whereClauses.push("providerId = ?");
+        whereClauses.push("sp.providerId = ?");
         queryParams.push(providerId);
     }
 
     const whereSql = whereClauses.join(' AND ');
 
     try {
-        const countQuery = `SELECT COUNT(*) as totalItems FROM subscription_plans WHERE ${whereSql}`;
+        const countQuery = `SELECT COUNT(*) as totalItems FROM subscription_plans sp WHERE ${whereSql}`;
         const [[{ totalItems }]] = await db.query(countQuery, queryParams);
         const totalPages = Math.ceil(totalItems / limit);
 
