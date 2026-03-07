@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../db');
+const { uploadImage } = require('../services/spaces.service');
 
 const formatCar = (car) => {
     let finalImageUrl = car.imageUrl;
@@ -115,7 +116,7 @@ router.get('/', async (req, res) => {
 
 // POST a new car
 router.post('/', async (req, res) => {
-    const { carNumber, model, driverId, capacity, pricePerKm, status, minKmPerDay, imageData, storeAsBinary, latitude, longitude } = req.body;
+    const { carNumber, model, driverId, capacity, pricePerKm, status, minKmPerDay, imageData, storeAsBinary, useSpaces, latitude, longitude } = req.body;
     
     let imageUrlToSave = null;
     let imageDataToSave = null;
@@ -123,11 +124,19 @@ router.post('/', async (req, res) => {
     if (imageData) {
         if (storeAsBinary) {
             imageDataToSave = Buffer.from(imageData, 'base64');
+        } else if (useSpaces) {
+            try {
+                const fileName = `car_${Date.now()}.jpg`;
+                imageUrlToSave = await uploadImage(imageData, 'cars', fileName);
+            } catch (err) {
+                console.error('Failed to upload car image to Spaces:', err);
+                imageUrlToSave = null;
+            }
         } else {
-            imageUrlToSave = `https://picsum.photos/id/${Math.floor(Math.random()*200)}/400/250`;
+            imageUrlToSave = null;
         }
     } else {
-        imageUrlToSave = `https://picsum.photos/id/${Math.floor(Math.random()*200)}/400/250`;
+        imageUrlToSave = null;
     }
 
     try {
@@ -153,23 +162,70 @@ router.post('/', async (req, res) => {
     }
 });
 
+// GET all car registration plans
+router.get('/registration-plans', async (req, res) => {
+    try {
+        const [plans] = await db.query("SELECT * FROM car_registration_plans WHERE status = 'Active'");
+        res.json(plans);
+    } catch (err) {
+        res.status(500).json({ message: err.message });
+    }
+});
+
+// POST a new car registration plan
+router.post('/registration-plans', async (req, res) => {
+    const { name, durationMonths, price } = req.body;
+    try {
+        const [result] = await db.query(
+            'INSERT INTO car_registration_plans (name, durationMonths, price) VALUES (?, ?, ?)',
+            [name, durationMonths, price]
+        );
+        const [[newPlan]] = await db.query('SELECT * FROM car_registration_plans WHERE id = ?', [result.insertId]);
+        res.status(201).json(newPlan);
+    } catch (err) {
+        res.status(500).json({ message: err.message });
+    }
+});
+
+// PUT update a car registration plan
+router.put('/registration-plans/:id', async (req, res) => {
+    const { id } = req.params;
+    const { name, durationMonths, price } = req.body;
+    try {
+        await db.query(
+            'UPDATE car_registration_plans SET name = ?, durationMonths = ?, price = ? WHERE id = ?',
+            [name, durationMonths, price, id]
+        );
+        const [[updatedPlan]] = await db.query('SELECT * FROM car_registration_plans WHERE id = ?', [id]);
+        res.json(updatedPlan);
+    } catch (err) {
+        res.status(500).json({ message: err.message });
+    }
+});
+
+// DELETE a car registration plan
+router.delete('/registration-plans/:id', async (req, res) => {
+    const { id } = req.params;
+    try {
+        await db.query("UPDATE car_registration_plans SET status = 'Deleted' WHERE id = ?", [id]);
+        res.json({ message: 'Plan deleted successfully' });
+    } catch (err) {
+        res.status(500).json({ message: err.message });
+    }
+});
+
 // POST to subscribe a car
 router.post('/:id/subscribe', async (req, res) => {
     const { id } = req.params;
     const { planId, paymentDetails } = req.body;
 
-    // This is a mocked data source for car registration plans. In a real app, this would be a DB table.
-    const plans = [
-        { id: 1, name: 'Basic', durationMonths: 6, price: 5000 },
-        { id: 2, name: 'Premium', durationMonths: 12, price: 9000 }
-    ];
-    const plan = plans.find(p => p.id === planId);
-    
-    if (!plan) {
-        return res.status(404).json({ message: 'Car registration plan not found.' });
-    }
-
     try {
+        const [planRows] = await db.query("SELECT * FROM car_registration_plans WHERE id = ? AND status = 'Active'", [planId]);
+        if (planRows.length === 0) {
+            return res.status(404).json({ message: 'Car registration plan not found.' });
+        }
+        const plan = planRows[0];
+
         // Log the transaction if payment details are provided
         if (paymentDetails) {
             await db.query(
@@ -199,7 +255,7 @@ router.post('/:id/subscribe', async (req, res) => {
 // PUT to update a car
 router.put('/:id', async (req, res) => {
     const { id } = req.params;
-    const { carNumber, model, driverId, capacity, pricePerKm, minKmPerDay, imageData, storeAsBinary, status, subscriptionExpiryDate, latitude, longitude } = req.body;
+    const { carNumber, model, driverId, capacity, pricePerKm, minKmPerDay, imageData, storeAsBinary, useSpaces, status, subscriptionExpiryDate, latitude, longitude } = req.body;
 
     try {
         // Fetch existing car to not overwrite fields that are not passed
@@ -227,8 +283,18 @@ router.put('/:id', async (req, res) => {
             if (storeAsBinary) {
                 updatedCar.imageData = Buffer.from(imageData, 'base64');
                 updatedCar.imageUrl = null;
+            } else if (useSpaces) {
+                try {
+                    const fileName = `car_${Date.now()}.jpg`;
+                    updatedCar.imageUrl = await uploadImage(imageData, 'cars', fileName);
+                    updatedCar.imageData = null;
+                } catch (err) {
+                    console.error('Failed to upload car image to Spaces:', err);
+                    updatedCar.imageUrl = null;
+                    updatedCar.imageData = null;
+                }
             } else {
-                updatedCar.imageUrl = `https://picsum.photos/id/${Math.floor(Math.random()*200)}/400/250`;
+                updatedCar.imageUrl = null;
                 updatedCar.imageData = null;
             }
         }

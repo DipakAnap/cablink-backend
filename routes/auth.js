@@ -5,6 +5,7 @@ const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const smsService = require('../services/sms.service');
 const emailService = require('../services/email.service');
+const { uploadImage } = require('../services/spaces.service');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'default_secret_key_change_in_production';
 
@@ -384,10 +385,20 @@ router.put('/users/:id', async (req, res) => {
             if (storeAsBinary) {
                 updateQuery += ', profilePictureData = ?, profilePictureUrl = NULL';
                 queryParams.push(Buffer.from(imageData, 'base64'));
+            } else if (req.body.useSpaces) {
+                try {
+                    const fileName = `profile_${Date.now()}.jpg`;
+                    const imageUrl = await uploadImage(imageData, 'profiles', fileName);
+                    updateQuery += ', profilePictureUrl = ?, profilePictureData = NULL';
+                    queryParams.push(imageUrl);
+                } catch (err) {
+                    console.error('Failed to upload profile image to Spaces:', err);
+                    updateQuery += ', profilePictureUrl = ?, profilePictureData = NULL';
+                    queryParams.push(null);
+                }
             } else {
                 updateQuery += ', profilePictureUrl = ?, profilePictureData = NULL';
-                const newUrl = `https://picsum.photos/id/${Math.floor(Math.random()*200)}/200`;
-                queryParams.push(newUrl);
+                queryParams.push(null);
             }
         }
 
