@@ -357,6 +357,27 @@ router.get('/customers', async (req, res) => {
     }
 });
 
+// GET /api/auth/users/:id
+router.get('/users/:id', async (req, res) => {
+    const { id } = req.params;
+    try {
+        const [[user]] = await db.query(`
+            SELECT u.*, sp.name as subscriptionPlanName 
+            FROM users u 
+            LEFT JOIN subscription_plans sp ON u.subscriptionPlanId = sp.id
+            WHERE u.id = ? AND u.status != 'Deleted'
+        `, [id]);
+        
+        if (user) {
+            res.json(formatUser(user));
+        } else {
+            res.status(404).json({ message: 'User not found' });
+        }
+    } catch (error) {
+        res.status(500).json({ message: 'Database error', error });
+    }
+});
+
 // PUT /api/auth/users/:id
 router.put('/users/:id', async (req, res) => {
     const { id } = req.params;
