@@ -63,6 +63,10 @@ const createNotifications = async (bookingId, userId, type) => {
 
 
 const formatBooking = (b) => {
+    let finalCarImageUrl = b.carImageUrl;
+    if (b.carImageData) {
+        finalCarImageUrl = `data:image/jpeg;base64,${Buffer.from(b.carImageData).toString('base64')}`;
+    }
     return {
         id: b.id,
         userId: b.userId,
@@ -87,6 +91,7 @@ const formatBooking = (b) => {
             carNumber: b.carNumber,
             pricePerKm: b.carPricePerKm,
             minKmPerDay: b.carMinKmPerDay,
+            imageUrl: finalCarImageUrl,
             driver: { id: b.driverId, name: b.driverName, phone: b.driverPhone, qrCodeUrl: b.driverQrCode } 
         } : null,
         route: b.routeIdResolved ? { 
@@ -164,6 +169,7 @@ router.get('/', async (req, res) => {
                 DATE_FORMAT(b.endDate, '%Y-%m-%dT%H:%i:%s.000Z') as endDate,
                 u.name as userName, u.phone as userPhone,
                 c.id as carIdResolved, c.model as carModel, c.carNumber as carNumber, c.pricePerKm as carPricePerKm, c.minKmPerDay as carMinKmPerDay,
+                c.imageUrl as carImageUrl, c.imageData as carImageData,
                 ud.id as driverId, ud.name as driverName, ud.phone as driverPhone, ud.qrCodeUrl as driverQrCode,
                 r.id as routeIdResolved, r.from as routeFrom, r.to as routeTo, 
                 DATE_FORMAT(r.date, '%Y-%m-%d') as routeDate, r.time as routeTime,
@@ -624,6 +630,7 @@ router.put('/:id/finalize', async (req, res) => {
                 b.*, DATE_FORMAT(b.bookingDate, '%Y-%m-%d') as bookingDate, DATE_FORMAT(b.startDate, '%Y-%m-%dT%H:%i:%s.000Z') as startDate, DATE_FORMAT(b.endDate, '%Y-%m-%dT%H:%i:%s.000Z') as endDate,
                 u.name as userName, u.phone as userPhone,
                 c.id as carIdResolved, c.model as carModel, c.carNumber as carNumber, c.pricePerKm as carPricePerKm, c.minKmPerDay as carMinKmPerDay,
+                c.imageUrl as carImageUrl, c.imageData as carImageData,
                 ud.id as driverId, ud.name as driverName, ud.phone as driverPhone, ud.qrCodeUrl as driverQrCode
             FROM bookings b
             JOIN users u ON b.userId = u.id
