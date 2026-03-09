@@ -194,6 +194,172 @@ router.get('/', async (req, res) => {
     }
 });
 
+// GET total revenue with filters
+router.get('/revenue', async (req, res) => {
+    const { carId, driverId, period, refDate } = req.query;
+    
+    let whereClauses = ["1=1"];
+    let queryParams = [];
+
+    if (carId && carId !== 'all') {
+        whereClauses.push('c.id = ?');
+        queryParams.push(carId);
+    }
+    if (driverId && driverId !== 'all') {
+        whereClauses.push('c.driverId = ?');
+        queryParams.push(driverId);
+    }
+
+    if (period && period !== 'overall' && refDate) {
+        const date = new Date(refDate);
+        let startDate, endDate;
+
+        if (period === 'day') {
+            startDate = new Date(date);
+            startDate.setHours(0, 0, 0, 0);
+            endDate = new Date(date);
+            endDate.setHours(23, 59, 59, 999);
+        } else if (period === 'week') {
+            startDate = new Date(date);
+            startDate.setDate(date.getDate() - date.getDay());
+            startDate.setHours(0, 0, 0, 0);
+            endDate = new Date(startDate);
+            endDate.setDate(startDate.getDate() + 6);
+            endDate.setHours(23, 59, 59, 999);
+        } else if (period === 'month') {
+            startDate = new Date(date.getFullYear(), date.getMonth(), 1);
+            endDate = new Date(date.getFullYear(), date.getMonth() + 1, 0, 23, 59, 59, 999);
+        } else if (period === 'year') {
+            startDate = new Date(date.getFullYear(), 0, 1);
+            endDate = new Date(date.getFullYear(), 11, 31, 23, 59, 59, 999);
+        }
+
+        if (startDate && endDate) {
+            whereClauses.push('( (r.date BETWEEN ? AND ?) OR (b.startDate BETWEEN ? AND ?) )');
+            const startStr = startDate.toISOString().slice(0, 19).replace('T', ' ');
+            const endStr = endDate.toISOString().slice(0, 19).replace('T', ' ');
+            queryParams.push(startStr, endStr, startStr, endStr);
+        }
+    }
+
+    const whereString = whereClauses.join(' AND ');
+
+    try {
+        const query = `
+            SELECT 
+                SUM(CASE WHEN b.paymentStatus = 'Paid' THEN b.totalPrice ELSE 0 END) as totalRevenue,
+                COUNT(b.id) as totalBookings
+            FROM bookings b
+            LEFT JOIN routes r ON b.routeId = r.id
+            LEFT JOIN cars c ON b.carId = c.id OR r.carId = c.id
+            WHERE ${whereString}
+        `;
+        const [[stats]] = await db.query(query, queryParams);
+        res.json({ 
+            totalRevenue: stats.totalRevenue || 0,
+            totalBookings: stats.totalBookings || 0
+        });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ message: err.message });
+    }
+});
+
+// GET car performance (revenue and expenses per car) with filters
+router.get('/performance', async (req, res) => {
+    const { driverId, period, refDate } = req.query;
+    
+    let whereClauses = ["1=1"];
+    let queryParams = [];
+    if (driverId && driverId !== 'all') {
+        whereClauses.push('c.driverId = ?');
+        queryParams.push(driverId);
+    }
+
+    let dateWhereBookings = "";
+    let dateWhereExpenses = "";
+    let dateParamsBookings = [];
+    let dateParamsExpenses = [];
+
+    if (period && period !== 'overall' && refDate) {
+        const date = new Date(refDate);
+        let startDate, endDate;
+
+        if (period === 'day') {
+            startDate = new Date(date);
+            startDate.setHours(0, 0, 0, 0);
+            endDate = new Date(date);
+            endDate.setHours(23, 59, 59, 999);
+        } else if (period === 'week') {
+            startDate = new Date(date);
+            startDate.setDate(date.getDate() - date.getDay());
+            startDate.setHours(0, 0, 0, 0);
+            endDate = new Date(startDate);
+            endDate.setDate(startDate.getDate() + 6);
+            endDate.setHours(23, 59, 59, 999);
+        } else if (period === 'month') {
+            startDate = new Date(date.getFullYear(), date.getMonth(), 1);
+            endDate = new Date(date.getFullYear(), date.getMonth() + 1, 0, 23, 59, 59, 999);
+        } else if (period === 'year') {
+            startDate = new Date(date.getFullYear(), 0, 1);
+            endDate = new Date(date.getFullYear(), 11, 31, 23, 59, 59, 999);
+        }
+
+        if (startDate && endDate) {
+            const startStr = startDate.toISOString().slice(0, 19).replace('T', ' ');
+            const endStr = endDate.toISOString().slice(0, 19).replace('T', ' ');
+            const startStrShort = startDate.toISOString().slice(0, 10);
+            const endStrShort = endDate.toISOString().slice(0, 10);
+
+            dateWhereBookings = 'AND ( (r.date BETWEEN ? AND ?) OR (b.startDate BETWEEN ? AND ?) )';
+            dateWhereExpenses = 'AND e.date BETWEEN ? AND ?';
+            dateParamsBookings = [startStr, endStr, startStr, endStr];
+            dateParamsExpenses = [startStrShort, endStrShort];
+        }
+    }
+
+    const query = `
+        SELECT 
+            c.id,
+            c.model,
+            c.carNumber,
+            COALESCE(rev.totalRevenue, 0) as totalRevenue,
+            COALESCE(exp.totalExpenses, 0) as totalExpenses
+        FROM cars c
+        LEFT JOIN (
+            SELECT 
+                COALESCE(b.carId, r.carId) as carId,
+                SUM(b.totalPrice) as totalRevenue
+            FROM bookings b
+            LEFT JOIN routes r ON b.routeId = r.id
+            WHERE b.paymentStatus = 'Paid' ${dateWhereBookings}
+            GROUP BY COALESCE(b.carId, r.carId)
+        ) rev ON c.id = rev.carId
+        LEFT JOIN (
+            SELECT 
+                e.carId,
+                SUM(e.amount) as totalExpenses
+            FROM expenses e
+            WHERE e.status = 'Active' ${dateWhereExpenses}
+            GROUP BY e.carId
+        ) exp ON c.id = exp.carId
+        WHERE ${whereClauses.join(' AND ')}
+    `;
+    
+    try {
+        const [performance] = await db.query(query, [...dateParamsBookings, ...dateParamsExpenses, ...queryParams]);
+        res.json(performance.map(p => ({
+            car: { id: p.id, model: p.model, carNumber: p.carNumber },
+            totalRevenue: parseFloat(p.totalRevenue),
+            totalExpenses: parseFloat(p.totalExpenses),
+            netProfit: parseFloat(p.totalRevenue) - parseFloat(p.totalExpenses)
+        })));
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ message: err.message });
+    }
+});
+
 // POST a new route booking
 router.post('/route', async (req, res) => {
     const { routeId, userId, seatsToBook, paymentStatus, paymentDetails } = req.body;
